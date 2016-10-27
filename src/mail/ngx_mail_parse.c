@@ -705,6 +705,19 @@ ngx_mail_smtp_parse_command(ngx_mail_session_t *s)
                     } else {
                         goto invalid;
                     }
+                } else if (p - c == 5) {
+
+                    if ((c[0] == 'P'|| c[0] == 'p')
+                        && (c[1] == 'R'|| c[1] == 'r')
+                        && (c[2] == 'O'|| c[2] == 'o')
+                        && (c[3] == 'X'|| c[3] == 'x')
+                        && (c[4] == 'Y'|| c[4] == 'y'))
+                    {
+                        s->command = NGX_SMTP_PROXY;
+
+                    } else {
+                        goto invalid;
+                    }
 #if (NGX_MAIL_SSL)
                 } else if (p - c == 8) {
 

@@ -278,7 +278,7 @@ typedef struct {
 #define NGX_SMTP_EXPN          11
 #define NGX_SMTP_HELP          12
 #define NGX_SMTP_STARTTLS      13
-
+#define NGX_SMTP_PROXY         14
 
 #define NGX_MAIL_AUTH_PLAIN             0
 #define NGX_MAIL_AUTH_LOGIN             1
@@ -296,6 +296,7 @@ typedef struct {
 
 
 #define NGX_MAIL_PARSE_INVALID_COMMAND  20
+#define NGX_MAIL_PROXY_PROTOCOL         21
 
 
 typedef void (*ngx_mail_init_session_pt)(ngx_mail_session_t *s,
