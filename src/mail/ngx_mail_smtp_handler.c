@@ -20,6 +20,7 @@ static void ngx_mail_smtp_invalid_pipelining(ngx_event_t *rev);
 static ngx_int_t ngx_mail_smtp_create_buffer(ngx_mail_session_t *s,
     ngx_connection_t *c);
 
+static ngx_int_t ngx_mail_smtp_proxy(ngx_mail_session_t *s, ngx_connection_t *c);
 static ngx_int_t ngx_mail_smtp_helo(ngx_mail_session_t *s, ngx_connection_t *c);
 static ngx_int_t ngx_mail_smtp_auth(ngx_mail_session_t *s, ngx_connection_t *c);
 static ngx_int_t ngx_mail_smtp_mail(ngx_mail_session_t *s, ngx_connection_t *c);
@@ -460,6 +461,11 @@ ngx_mail_smtp_auth_state(ngx_event_t *rev)
                 ngx_str_set(&s->out, smtp_starttls);
                 break;
 
+            case NGX_SMTP_PROXY:
+                rc = ngx_mail_smtp_proxy(s, c);
+                ngx_str_null(&s->out);
+                break;
+
             default:
                 rc = NGX_MAIL_PARSE_INVALID_COMMAND;
                 break;
@@ -509,6 +515,7 @@ ngx_mail_smtp_auth_state(ngx_event_t *rev)
 
         /* fall through */
 
+    case NGX_MAIL_PROXY_PROTOCOL:
     case NGX_OK:
         s->args.nelts = 0;
 
@@ -521,8 +528,57 @@ ngx_mail_smtp_auth_state(ngx_event_t *rev)
             s->arg_start = s->buffer->pos;
         }
 
-        ngx_mail_send(c->write);
+        if (rc == NGX_OK) {
+            ngx_mail_send(c->write);
+        }
     }
+}
+
+
+/*
+ * ngx_mail_smtp_proxy handles Proxy Protocol command. It only supports v1.
+ * If it fails to parse a command then it is silently ignored.
+ *
+ * Proxy protocol v1 command format is as follows:
+ *
+ *  PROXY + " " + <inet protocol> + " " + <client ip> + " " + <proxy ip>
+ *  + " " + <client port> + " " + <proxy port> + "\r\n"
+ *
+ * e.g.: `PROXY TCP4 198.51.100.22 203.0.113.7 35646 80\r\n`
+ */
+static ngx_int_t
+ngx_mail_smtp_proxy(ngx_mail_session_t *s, ngx_connection_t *c)
+{
+    ngx_str_t  *last_arg, *client_addr_arg, cmd, *proxy_protocol_addr;
+
+    if (s->args.nelts != 5) {
+        last_arg = s->args.elts;
+        last_arg += s->args.nelts - 1;
+        cmd.data = s->cmd.data;
+        cmd.len = last_arg->data + last_arg->len - s->cmd.data;
+
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "smtp invalid proxy command:\"%V\"", &cmd);
+        return NGX_MAIL_PROXY_PROTOCOL;
+    }
+
+    client_addr_arg = s->args.elts;
+    client_addr_arg += 1;
+
+    proxy_protocol_addr = &s->connection->proxy_protocol_addr;
+    proxy_protocol_addr->data = ngx_pnalloc(c->pool, client_addr_arg->len);
+    if (proxy_protocol_addr->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(proxy_protocol_addr->data, client_addr_arg->data,
+               client_addr_arg->len);
+    proxy_protocol_addr->len = client_addr_arg->len;
+
+    ngx_log_debug1(NGX_LOG_DEBUG_MAIL, c->log, 0,
+                   "smtp proxy client_ip:\"%V\"", proxy_protocol_addr);
+
+    return NGX_MAIL_PROXY_PROTOCOL;
 }
 
 
