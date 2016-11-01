@@ -10,15 +10,7 @@
 #include <ngx_event.h>
 #include <ngx_event_connect.h>
 #include <ngx_mail.h>
-
-
-typedef struct {
-    ngx_flag_t  enable;
-    ngx_flag_t  pass_error_message;
-    ngx_flag_t  xclient;
-    size_t      buffer_size;
-    ngx_msec_t  timeout;
-} ngx_mail_proxy_conf_t;
+#include <ngx_mail_proxy_module.h>
 
 
 static void ngx_mail_proxy_block_read(ngx_event_t *rev);
@@ -72,6 +64,13 @@ static ngx_command_t  ngx_mail_proxy_commands[] = {
       ngx_conf_set_flag_slot,
       NGX_MAIL_SRV_CONF_OFFSET,
       offsetof(ngx_mail_proxy_conf_t, xclient),
+      NULL },
+
+    { ngx_string("proxy_protocol"),
+      NGX_MAIL_MAIN_CONF|NGX_MAIL_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_MAIL_SRV_CONF_OFFSET,
+      offsetof(ngx_mail_proxy_conf_t, proxy_protocol),
       NULL },
 
       ngx_null_command
@@ -456,6 +455,7 @@ ngx_mail_proxy_smtp_handler(ngx_event_t *rev)
     ngx_mail_session_t        *s;
     ngx_mail_proxy_conf_t     *pcf;
     ngx_mail_core_srv_conf_t  *cscf;
+    ngx_str_t                  client_addr;
 
     ngx_log_debug0(NGX_LOG_DEBUG_MAIL, rev->log, 0,
                    "mail proxy smtp auth handler");
@@ -525,9 +525,12 @@ ngx_mail_proxy_smtp_handler(ngx_event_t *rev)
 
         s->connection->log->action = "sending XCLIENT to upstream";
 
-        line.len = sizeof("XCLIENT ADDR= LOGIN= NAME="
-                          CRLF) - 1
-                   + s->connection->addr_text.len + s->login.len + s->host.len;
+        client_addr = s->connection->addr_text;
+        if (s->connection->proxy_protocol_addr.data != NULL) {
+            client_addr = s->connection->proxy_protocol_addr;
+        }
+        line.len = sizeof("XCLIENT ADDR= LOGIN= NAME=" CRLF) - 1
+                   + client_addr.len + s->login.len + s->host.len;
 
 #if (NGX_HAVE_INET6)
         if (s->connection->sockaddr->sa_family == AF_INET6) {
@@ -549,9 +552,7 @@ ngx_mail_proxy_smtp_handler(ngx_event_t *rev)
         }
 #endif
 
-        p = ngx_copy(p, s->connection->addr_text.data,
-                     s->connection->addr_text.len);
-
+        p = ngx_copy(p, client_addr.data, client_addr.len);
         if (s->login.len) {
             p = ngx_cpymem(p, " LOGIN=", sizeof(" LOGIN=") - 1);
             p = ngx_copy(p, s->login.data, s->login.len);
@@ -1099,6 +1100,7 @@ ngx_mail_proxy_create_conf(ngx_conf_t *cf)
     pcf->enable = NGX_CONF_UNSET;
     pcf->pass_error_message = NGX_CONF_UNSET;
     pcf->xclient = NGX_CONF_UNSET;
+    pcf->proxy_protocol = NGX_CONF_UNSET;
     pcf->buffer_size = NGX_CONF_UNSET_SIZE;
     pcf->timeout = NGX_CONF_UNSET_MSEC;
 
@@ -1115,6 +1117,7 @@ ngx_mail_proxy_merge_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_value(conf->enable, prev->enable, 0);
     ngx_conf_merge_value(conf->pass_error_message, prev->pass_error_message, 0);
     ngx_conf_merge_value(conf->xclient, prev->xclient, 1);
+    ngx_conf_merge_value(conf->proxy_protocol, prev->proxy_protocol, 0);
     ngx_conf_merge_size_value(conf->buffer_size, prev->buffer_size,
                               (size_t) ngx_pagesize);
     ngx_conf_merge_msec_value(conf->timeout, prev->timeout, 24 * 60 * 60000);

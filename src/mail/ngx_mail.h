@@ -195,6 +195,7 @@ typedef struct {
     void                  **ctx;
     void                  **main_conf;
     void                  **srv_conf;
+    ngx_mail_addr_conf_t   *addr_conf;
 
     ngx_resolver_ctx_t     *resolver_ctx;
 
