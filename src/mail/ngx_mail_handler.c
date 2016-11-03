@@ -12,6 +12,8 @@
 
 
 static void ngx_mail_init_session(ngx_connection_t *c);
+static void ngx_mail_proxy_protocol_handler(ngx_event_t *rev);
+static void ngx_mail_init_session_handler(ngx_event_t *rev);
 
 #if (NGX_MAIL_SSL)
 static void ngx_mail_ssl_init_connection(ngx_ssl_t *ssl, ngx_connection_t *c);
@@ -34,6 +36,7 @@ ngx_mail_init_connection(ngx_connection_t *c)
     ngx_mail_session_t        *s;
     ngx_mail_addr_conf_t      *addr_conf;
     ngx_mail_core_srv_conf_t  *cscf;
+    ngx_event_t               *rev;
     u_char                     text[NGX_SOCKADDR_STRLEN];
 #if (NGX_HAVE_INET6)
     struct sockaddr_in6       *sin6;
@@ -128,6 +131,7 @@ ngx_mail_init_connection(ngx_connection_t *c)
 
     s->main_conf = addr_conf->ctx->main_conf;
     s->srv_conf = addr_conf->ctx->srv_conf;
+    s->addr_conf = addr_conf;
 
     s->addr_text = &addr_conf->addr_text;
 
@@ -159,10 +163,30 @@ ngx_mail_init_connection(ngx_connection_t *c)
 
     c->log_error = NGX_ERROR_INFO;
 
-#if (NGX_MAIL_SSL)
-    {
-    ngx_mail_ssl_conf_t  *sslcf;
+    rev = c->read;
 
+    if (addr_conf->proxy_protocol) {
+        rev->handler = ngx_mail_proxy_protocol_handler;
+        ngx_mail_proxy_protocol_handler(rev);
+        return;
+    }
+
+    ngx_mail_init_session_handler(rev);
+}
+
+
+static void
+ngx_mail_init_session_handler(ngx_event_t *rev)
+{
+    ngx_connection_t  *c;
+
+    c = rev->data;
+
+#if (NGX_MAIL_SSL)
+    ngx_mail_ssl_conf_t  *sslcf;
+    ngx_mail_session_t   *s;
+
+    s = c->data;
     sslcf = ngx_mail_get_module_srv_conf(s, ngx_mail_ssl_module);
 
     if (sslcf->enable) {
@@ -172,7 +196,7 @@ ngx_mail_init_connection(ngx_connection_t *c)
         return;
     }
 
-    if (addr_conf->ssl) {
+    if (s->addr_conf->ssl) {
 
         c->log->action = "SSL handshaking";
 
@@ -186,8 +210,6 @@ ngx_mail_init_connection(ngx_connection_t *c)
 
         ngx_mail_ssl_init_connection(&sslcf->ssl, c);
         return;
-    }
-
     }
 #endif
 
@@ -897,4 +919,73 @@ ngx_mail_log_error(ngx_log_t *log, u_char *buf, size_t len)
     p = ngx_snprintf(buf, len, ", upstream: %V", s->proxy->upstream.name);
 
     return p;
+}
+
+
+static void
+ngx_mail_proxy_protocol_handler(ngx_event_t *rev)
+{
+    ngx_mail_session_t        *s;
+    ngx_mail_core_srv_conf_t  *cscf;
+    u_char                    *p, buf[NGX_PROXY_PROTOCOL_MAX_HEADER + 1];
+    size_t                     size;
+    ssize_t                    n;
+    ngx_connection_t          *c;
+
+    c = rev->data;
+    s = c->data;
+
+    cscf = ngx_mail_get_module_srv_conf(s, ngx_mail_core_module);
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, rev->log, 0,
+                   "read proxy protocol header");
+
+    if (rev->timedout) {
+        ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT, "client timed out");
+        ngx_mail_close_connection(c);
+        return;
+    }
+
+    if (c->close) {
+        ngx_mail_close_connection(c);
+        return;
+    }
+
+    n = recv(c->fd, (char *) buf, sizeof(buf), MSG_PEEK);
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, rev->log, 0, "http recv(): %z", n);
+
+    if (n == -1) {
+        if (ngx_socket_errno == NGX_EAGAIN) {
+            rev->ready = 0;
+
+            if (!rev->timer_set) {
+                ngx_add_timer(rev, cscf->timeout);
+                ngx_reusable_connection(c, 1);
+            }
+
+            if (ngx_handle_read_event(rev, 0) != NGX_OK) {
+                ngx_mail_close_connection(c);
+            }
+            return;
+        }
+
+        ngx_connection_error(c, ngx_socket_errno, "recv() failed");
+        ngx_mail_close_connection(c);
+        return;
+    }
+
+    p = ngx_proxy_protocol_read(c, buf, buf + n);
+    if (p == NULL) {
+        ngx_mail_close_connection(c);
+        return;
+    }
+
+    size = p - buf;
+    if (c->recv(c, buf, size) != (ssize_t) size) {
+        ngx_mail_close_connection(c);
+        return;
+    }
+
+    ngx_mail_init_session_handler(rev);
 }
